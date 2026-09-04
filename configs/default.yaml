@@ -1,0 +1,32 @@
+model_name: distilbert-base-uncased
+num_labels: 2
+seed: 42
+output_dir: outputs/experiments/run
+
+data:
+  dataset_name: stanfordnlp/sst2
+  dataset_config: null
+  text_field: sentence
+  label_field: label
+  max_length: 128
+  train_subset: null
+  val_subset: null
+  test_from_train: 2000
+  probe_size: 64
+
+train:
+  max_steps: 300
+  batch_size: 32
+  grad_accum: 1
+  warmup_ratio: 0.1
+  scheduler: linear
+  eval_every: 50
+  metric_every: 10
+  probe_every: 10
+  grad_clip: 1.0
+  precision: 32-true
+
+sharpness:
+  n_directions: 30      # random directions per scan; scan is forward-only so this is cheap
+  eps_list: [0.001, 0.01, 0.05]
+  n_eval_batches: 8

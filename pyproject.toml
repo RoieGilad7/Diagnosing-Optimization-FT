@@ -1,0 +1,29 @@
+[project]
+name = "diagnosing-optimization-ft"
+version = "0.1.0"
+description = "AdamW vs Muon optimization dynamics on SST-2 fine-tuning"
+requires-python = ">=3.11"
+dependencies = [
+    "torch==2.14.0",
+    "lightning==2.6.5",
+    "transformers==5.16.1",
+    "datasets==5.0.1",
+    "fsspec[http]==2026.6.0",
+    "pyarrow==25.0.1",
+    "optuna==4.9.0",
+    "muon-optimizer==0.1.0",
+    "pandas==3.0.5",
+    "matplotlib==3.11.1",
+    "pyyaml==6.0.3",
+    "numpy==2.5.2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==9.1.1"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+include = ["src*"]
