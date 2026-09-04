@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Callable
 
 import lightning as L
 from lightning.pytorch.callbacks import ModelCheckpoint
@@ -49,13 +50,14 @@ def run_experiment(
     do_sharpness: bool = True,
     save_checkpoint: bool = True,
     verbose: bool = True,
+    on_eval: Callable[[int, float], None] | None = None,
 ) -> dict:
     seed_everything(cfg.seed)
     output_dir = Path(cfg.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     dm = SST2DataModule(cfg.data, cfg.model_name, cfg.train.batch_size, cfg.seed)
-    module = FineTuneModule(cfg, csv_path=str(output_dir / "metrics.csv"))
+    module = FineTuneModule(cfg, csv_path=str(output_dir / "metrics.csv"), on_eval=on_eval)
 
     trainer = build_trainer(cfg, output_dir, save_checkpoint, verbose)
     trainer.fit(module, datamodule=dm)

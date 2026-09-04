@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
 
 import optuna
@@ -8,6 +9,8 @@ import yaml
 
 from src.training.runner import run_experiment
 from src.utils.config import ExperimentConfig, load_config, merge_overrides, save_config
+
+logger = logging.getLogger(__name__)
 
 CONFIG_DIR = Path("configs")
 
@@ -70,7 +73,7 @@ def run_phase0(args) -> None:
     cfg = load_base_config(args.optimizer)
     cfg = merge_overrides(cfg, quick_overrides())
     cfg = merge_overrides(cfg, {"output_dir": args.output_dir or f"outputs/phase0/{args.optimizer}"})
-    print(f"[phase0] sanity check for {args.optimizer}")
+    logger.info("[phase0] sanity check for %s", args.optimizer)
     summary = run_experiment(cfg, do_sharpness=True, save_checkpoint=True, verbose=True)
 
     out = Path(cfg.output_dir)
@@ -81,10 +84,10 @@ def run_phase0(args) -> None:
         "summary.json": (out / "summary.json").exists(),
     }
     _verify_checkpoint_loads(out / "last.ckpt", cfg)
-    print("[phase0] artifact checks:", checks)
-    print(f"[phase0] val_acc={summary['val_acc']:.4f} params={summary['param_groups']}")
+    logger.info("[phase0] artifact checks: %s", checks)
+    logger.info("[phase0] val_acc=%.4f params=%s", summary["val_acc"], summary["param_groups"])
     assert all(checks.values()), "phase0 missing artifacts"
-    print("[phase0] PASS")
+    logger.info("[phase0] PASS")
 
 
 def _verify_checkpoint_loads(ckpt: Path, cfg: ExperimentConfig) -> None:
@@ -100,11 +103,14 @@ def _verify_checkpoint_loads(ckpt: Path, cfg: ExperimentConfig) -> None:
 
 def suggest_hparams(trial: optuna.Trial, optimizer: str) -> dict:
     """Intentionally small search space (see prompt): lr + weight decay, plus
-    momentum for Muon. All other optimizer settings are held fixed."""
+    momentum for Muon and its AdamW equivalent (beta1, the first-moment decay
+    rate). beta2 and all other optimizer settings are held fixed."""
     if optimizer == "adamw":
+        beta1 = trial.suggest_float("beta1", 0.80, 0.99)
         return {
             "optim.lr": trial.suggest_float("lr", 5e-6, 1e-4, log=True),
             "optim.weight_decay": trial.suggest_float("weight_decay", 0.0, 0.3),
+            "optim.betas": (beta1, 0.999),
         }
     if optimizer == "muon":
         return {
@@ -129,14 +135,21 @@ def tune(
         storage=storage,
         load_if_exists=True,
         sampler=optuna.samplers.TPESampler(seed=base_cfg.seed),
+        pruner=optuna.pruners.MedianPruner(),
     )
 
     def objective(trial: optuna.Trial) -> float:
         overrides = suggest_hparams(trial, base_cfg.optimizer)
         overrides["output_dir"] = str(study_dir / f"trial_{trial.number}")
         cfg = merge_overrides(base_cfg, overrides)
+
+        def on_eval(step: int, val_acc: float) -> None:
+            trial.report(val_acc, step)
+            if trial.should_prune():
+                raise optuna.TrialPruned()
+
         summary = run_experiment(
-            cfg, do_sharpness=False, save_checkpoint=False, verbose=verbose
+            cfg, do_sharpness=False, save_checkpoint=False, verbose=verbose, on_eval=on_eval
         )
         trial.set_user_attr("val_loss", summary["val_loss"])
         return summary["val_acc"]
@@ -148,7 +161,14 @@ def tune(
 def save_best_config(
     study: optuna.Study, phase2_cfg: ExperimentConfig, out_path: Path
 ) -> ExperimentConfig:
-    overrides = {f"optim.{k}": v for k, v in study.best_params.items()}
+    params = dict(study.best_params)
+    overrides: dict = {}
+    if "beta1" in params:
+        # suggest_hparams names it "beta1" (a scalar), but it lives in the
+        # config as the first element of the `betas` tuple; beta2 stays fixed.
+        beta2 = phase2_cfg.optim.betas[1]
+        overrides["optim.betas"] = (params.pop("beta1"), beta2)
+    overrides.update({f"optim.{k}": v for k, v in params.items()})
     best = merge_overrides(phase2_cfg, overrides)
     save_config(best, out_path)
     return best
@@ -160,14 +180,18 @@ def run_phase1(args) -> None:
     if args.quick:
         cfg = merge_overrides(cfg, quick_overrides())
     study_dir = Path(args.output_dir or f"outputs/optuna/{args.optimizer}")
-    print(f"[phase1] tuning {args.optimizer}: {args.trials} trials -> {study_dir}")
+    logger.info("[phase1] tuning %s: %d trials -> %s", args.optimizer, args.trials, study_dir)
 
     study = tune(cfg, n_trials=args.trials, study_dir=study_dir, verbose=args.verbose)
 
+    n_pruned = sum(t.state == optuna.trial.TrialState.PRUNED for t in study.trials)
+    n_complete = sum(t.state == optuna.trial.TrialState.COMPLETE for t in study.trials)
+    logger.info("[phase1] trials: %d complete, %d pruned", n_complete, n_pruned)
+
     phase2_cfg = merge_overrides(cfg, {"output_dir": f"outputs/experiments/{args.optimizer}_best"})
     best = save_best_config(study, phase2_cfg, study_dir / "best_config.yaml")
-    print(f"[phase1] best val_acc={study.best_value:.4f} params={study.best_params}")
-    print(f"[phase1] wrote {study_dir / 'best_config.yaml'}")
+    logger.info("[phase1] best val_acc=%.4f params=%s", study.best_value, study.best_params)
+    logger.info("[phase1] wrote %s", study_dir / "best_config.yaml")
     del best
 
 
@@ -180,11 +204,13 @@ def run_phase2(args) -> None:
     cfg = apply_cli_overrides(cfg, args)
     if args.quick:
         cfg = merge_overrides(cfg, quick_overrides())
-    print(f"[phase2] training {cfg.optimizer} -> {cfg.output_dir}")
+    logger.info("[phase2] training %s -> %s", cfg.optimizer, cfg.output_dir)
     summary = run_experiment(cfg, do_sharpness=True, save_checkpoint=True, verbose=args.verbose)
-    print(
-        f"[phase2] val_acc={summary['val_acc']:.4f} test_acc={summary['test_acc']:.4f} "
-        f"params={summary['param_groups']}"
+    logger.info(
+        "[phase2] val_acc=%.4f test_acc=%.4f params=%s",
+        summary["val_acc"],
+        summary["test_acc"],
+        summary["param_groups"],
     )
 
 
@@ -206,10 +232,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     args = build_parser().parse_args()
     phase_to_func = {0: run_phase0, 1: run_phase1, 2: run_phase2}
     phase_to_func[args.phase](args)
-    
 
 if __name__ == "__main__":
     main()

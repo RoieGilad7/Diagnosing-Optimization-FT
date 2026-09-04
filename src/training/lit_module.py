@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import Callable
 
 import lightning as L
 import torch
@@ -30,7 +31,12 @@ class _StepCadence:
 
 
 class FineTuneModule(L.LightningModule):
-    def __init__(self, cfg: ExperimentConfig, csv_path: str | None = None) -> None:
+    def __init__(
+        self,
+        cfg: ExperimentConfig,
+        csv_path: str | None = None,
+        on_eval: Callable[[int, float], None] | None = None,
+    ) -> None:
         super().__init__()
         self.cfg = cfg
         self.automatic_optimization = False
@@ -38,6 +44,7 @@ class FineTuneModule(L.LightningModule):
         self.opt_info: dict = {}
         self.opt_step = 0
         self._csv_path = csv_path
+        self._on_eval = on_eval
         self._logger: CSVMetricLogger | None = None
         self._collector: MetricCollector | None = None
         self._scheduler = None
@@ -45,7 +52,7 @@ class FineTuneModule(L.LightningModule):
 
     # ---- setup -----------------------------------------------------------
     def configure_optimizers(self):
-        optimizer, info = build_optimizer(self.cfg.optimizer, self.model, self.cfg.optimizer_args)
+        optimizer, info = build_optimizer(self.cfg.optimizer, self.model, self.cfg.optim)
         self.opt_info = info
 
         warmup = int(self.cfg.train.warmup_ratio * self.cfg.train.max_steps)
@@ -149,6 +156,10 @@ class FineTuneModule(L.LightningModule):
         val_loss, val_acc = self.evaluate(self.trainer.datamodule.val_dataloader())
         self.log("val_acc", val_acc, prog_bar=True)
         self.log("val_loss", val_loss)
+        if self._on_eval is not None:
+            # May raise (e.g. optuna.TrialPruned) to abort training early;
+            # that's intentional and propagates up through trainer.fit().
+            self._on_eval(self.opt_step, val_acc)
         return {"val_loss": val_loss, "val_acc": val_acc}
 
     def _lr_row(self, optimizer: torch.optim.Optimizer) -> dict:

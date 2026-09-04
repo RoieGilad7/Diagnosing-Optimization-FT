@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def _load(path: str) -> dict | None:
@@ -95,6 +98,7 @@ universally better.
 
 
 def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     p = argparse.ArgumentParser(description="Generate the one-page AdamW vs Muon report")
     p.add_argument("--exp-dir", default="outputs/experiments")
     p.add_argument("--out", default="outputs/report.md")
@@ -111,7 +115,7 @@ def main() -> None:
     }
     report = build_report(matched, best)
     Path(args.out).write_text(report)
-    print(f"[report] wrote {args.out}")
+    logger.info("[report] wrote %s", args.out)
 
 
 if __name__ == "__main__":

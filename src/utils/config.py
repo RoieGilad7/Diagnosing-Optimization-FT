@@ -60,7 +60,7 @@ class ExperimentConfig:
     seed: int = 42
     output_dir: str = "outputs/experiments/run"
     data: DataConfig = field(default_factory=DataConfig)
-    optimizer_args: OptimHParams = field(default_factory=OptimHParams)
+    optim: OptimHParams = field(default_factory=OptimHParams)
     train: TrainConfig = field(default_factory=TrainConfig)
     sharpness: SharpnessConfig = field(default_factory=SharpnessConfig)
 

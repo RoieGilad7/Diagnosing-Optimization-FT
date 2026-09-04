@@ -22,18 +22,18 @@ def test_load_default_config_types():
 def test_muon_config_has_momentum_and_betas_tuple():
     cfg = load_config(CONFIGS / "muon.yaml")
     assert cfg.optimizer == "muon"
-    assert cfg.optimizer_args.momentum == 0.95
-    assert isinstance(cfg.optimizer_args.betas, tuple)
+    assert cfg.optim.momentum == 0.95
+    assert isinstance(cfg.optim.betas, tuple)
 
 
 def test_merge_overrides_dotted_paths():
     cfg = ExperimentConfig()
     merged = merge_overrides(cfg, {"optim.lr": 1e-3, "train.max_steps": 5, "seed": 7})
-    assert merged.optimizer_args.lr == 1e-3
+    assert merged.optim.lr == 1e-3
     assert merged.train.max_steps == 5
     assert merged.seed == 7
     # original is untouched
-    assert cfg.optimizer_args.lr != 1e-3
+    assert cfg.optim.lr != 1e-3
 
 
 def test_save_load_roundtrip(tmp_path):
@@ -41,5 +41,5 @@ def test_save_load_roundtrip(tmp_path):
     path = tmp_path / "cfg.yaml"
     save_config(cfg, path)
     loaded = load_config(path)
-    assert loaded.optimizer_args.lr == 3e-4
+    assert loaded.optim.lr == 3e-4
     assert loaded.to_dict() == cfg.to_dict()

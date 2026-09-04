@@ -1,5 +1,5 @@
 optimizer: muon
-optimizer_args:
+optim:
   lr: 0.02            # Muon spectral learning rate (encoder-body 2-D weights)
   weight_decay: 0.01
   momentum: 0.95

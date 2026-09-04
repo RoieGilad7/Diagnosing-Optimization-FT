@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 from pathlib import Path
 
 import matplotlib
@@ -9,6 +10,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 TRAJECTORY_PLOTS = [
     ("train_loss", "Training loss"),
@@ -86,13 +89,14 @@ def _parse_run(spec: str) -> tuple[str, str]:
 
 
 def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     p = argparse.ArgumentParser(description="Plot AdamW vs Muon trajectories")
     p.add_argument("--run", action="append", required=True, help="label:path/to/run_dir")
     p.add_argument("--out", default="outputs/analysis")
     args = p.parse_args()
     runs = dict(_parse_run(s) for s in args.run)
     path = analyze(runs, args.out)
-    print(f"[analyze] wrote {path}")
+    logger.info("[analyze] wrote %s", path)
 
 
 if __name__ == "__main__":
