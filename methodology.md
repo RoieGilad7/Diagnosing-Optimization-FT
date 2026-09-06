@@ -2,55 +2,58 @@
 
 ## Data: train / validation / test split
 
-Dataset: `stanfordnlp/sst2` (GLUE SST-2, binary sentiment). GLUE's official
-test split has hidden labels, so:
+We use `stanfordnlp/sst2` (GLUE SST-2, binary sentiment); since its official
+test labels are hidden, we build our own three-way split: **train** is the
+original 67,349-example split minus a fixed, seeded 2,000-example slice
+(~65,349 examples actually used for training); **validation** is GLUE's
+official 872-example split, used for model selection and as the Optuna
+objective; **test** is that same 2,000-example slice held out from train,
+used only for final reporting.
 
-- **Train** — the original `train` split (67,349 examples) minus a fixed,
-  seeded 2,000-example held-out slice → ~65,349 examples used for training.
-- **Validation** — GLUE's official `validation` split (872 examples). Used
-  for model selection and as the Optuna objective (`val_acc`).
-- **Test** — the 2,000-example held-out slice of `train` (carved with a fixed
-  seed before training). Used only for final reporting.
-
-**Caveat:** `train` sentences average 9.4 words (median 7 — many short
-Sentiment-Treebank phrase fragments), vs. `validation`'s 19.5 words (median
-19, full sentences only). Since "test" is carved from `train`, it is
-systematically easier than `validation`, so `test_acc > val_acc` is an
-expected artifact of this dataset, not a modeling error.
+Worth noting: train's sentences average 9.4 words (many are short
+Sentiment-Treebank fragments) vs. validation's 19.5 (full sentences only).
+Since test is carved from train, it's systematically easier than
+validation — so `test_acc > val_acc` is an expected dataset quirk, not a
+modeling error.
 
 ## Pre-trained model
 
-`distilbert-base-uncased` (67.0M params), fine-tuned with a freshly
-initialized sequence-classification head (`pre_classifier` + `classifier`,
-2 labels); DistilBERT's original masked-language-model head is discarded on
-load. Inputs tokenized with DistilBERT's tokenizer, `max_length=128`.
+We fine-tune `distilbert-base-uncased` (67.0M params), swapping its
+masked-language-model head for a fresh, randomly initialized classification
+head (`pre_classifier` + `classifier`, 2 labels), and tokenize inputs with
+DistilBERT's own tokenizer, truncated to 128 tokens.
 
-Muon is a hybrid: Muon optimizes the encoder body's ≥2-D weight matrices
-(36 tensors, ~42.5M params); an auxiliary AdamW optimizes everything else —
-embeddings, classification head, biases, LayerNorm gains (68 tensors,
-~24.5M params).
+For Muon, we only orthogonalize the encoder body's 2-D weight matrices (36
+tensors, ~42.5M params) — everything else (embeddings, the classification
+head, biases, LayerNorm gains: 68 tensors, ~24.5M params) goes to an
+auxiliary AdamW instead.
 
 ## Loss
 
-Standard cross-entropy over 2 classes, computed by the Hugging Face
-sequence-classification head from logits + labels.
+Standard cross-entropy over the two classes, computed by Hugging Face's
+sequence-classification head directly from logits and labels.
 
 ## Metrics
 
-- **Task:** train loss, val loss, val accuracy (primary metric — model
-  selection and Optuna objective), test accuracy (final reporting only).
+We track four groups of metrics:
+
+- **Task:** train loss, val loss, val accuracy (our primary metric — used
+  for model selection and the Optuna objective), test accuracy (final
+  reporting only).
 - **Optimization:** gradient norm, update norm, relative update norm,
   per-group learning rate, update sparsity.
 - **Geometry:** momentum–gradient cosine (AdamW's `exp_avg` / Muon's
-  `momentum_buffer`), probe-gradient temporal cosine (fixed probe batch).
-- **Sharpness** (phase 2 only): filter-normalized random-direction loss
-  increase — 30 directions × 3 perturbation sizes (`eps`) × 8 eval batches;
-  smaller mean increase ⇒ locally flatter.
+  `momentum_buffer`), probe-gradient temporal cosine (on a fixed batch).
+- **Sharpness** (phase 2 only): loss increase under filter-normalized random
+  perturbations — 30 directions × 3 sizes (`eps`) × 8 eval batches; a
+  smaller mean increase means a locally flatter solution.
 
 ## Phase 1 — hyperparameter search (Optuna)
 
-Reduced-fidelity budget: 1000 steps/trial, eval every 100 steps, TPE sampler
-(seeded), `MedianPruner` (cuts weak trials early), 30 trials/optimizer.
+A full 5,000-step run is too expensive to search over, so we tune at a
+cheaper 1000-step budget instead (evaluating every 100 steps), using
+Optuna's TPE sampler and a `MedianPruner` to cut weak trials short — 30
+trials per optimizer.
 
 **Searched:**
 
@@ -59,12 +62,13 @@ Reduced-fidelity budget: 1000 steps/trial, eval every 100 steps, TPE sampler
 | AdamW | log-uniform [5e-6, 1e-4] | uniform [0, 0.3] | beta1, uniform [0.80, 0.99] |
 | Muon | log-uniform [1e-4, 5e-2]¹ | uniform [0, 0.3] | momentum, uniform [0.9, 0.99] |
 
-¹ Widened from an initial [1e-3, 1e-1] after that search showed the optimum
-pinned to the lower boundary; table reflects the final search.
+¹ We first searched Muon's lr in [1e-3, 1e-1], but the best trials kept
+clustering at the lower edge, so we widened the floor to 1e-4 and re-ran;
+this table shows that final search.
 
-**Fixed** (both optimizers, both phases): beta2=0.999, eps=1e-8, Muon's
-auxiliary-AdamW `adam_lr`=2e-5, `batch_size`=32, linear schedule,
-`warmup_ratio`=0.1, `grad_clip`=1.0, seed=42, model/tokenizer as above.
+Everything else stayed fixed, for both optimizers and both phases: beta2 =
+0.999, eps = 1e-8, Muon's auxiliary-AdamW lr = 2e-5, batch size 32, a linear
+warmup+decay schedule (10% warmup), gradient clipping at 1.0, and seed = 42.
 
 **Raw results:**
 
@@ -75,21 +79,21 @@ auxiliary-AdamW `adam_lr`=2e-5, `batch_size`=32, linear schedule,
 
 ## Phase 2 — full training
 
-5,000 steps per run (warmup + linear LR decay calibrated to this budget),
-same data/schedule/seed across all four runs. Two experiments per optimizer:
+Each run trains for 5,000 steps (warmup and linear decay calibrated to that
+budget), using the same data, schedule, and seed throughout. For each
+optimizer we run two experiments — **matched**, with fixed default
+hyperparameters, to isolate the optimizer's effect; and **best**, with its
+Phase-1 tuned hyperparameters.
 
-- **Matched** — fixed default hyperparameters (below), isolates the optimizer.
-- **Best** — Phase-1 tuned hyperparameters (above).
+**Overfitting correction:** an earlier 10,000-step run showed val_loss
+bottom out around step 1600–1800, then climb back up while train_loss kept
+collapsing toward zero — classic overfitting. Since that would also bias the
+sharpness scan (normally computed at the final step) toward whichever
+optimizer overfits faster, we pull every metric below — sharpness included —
+from each run's **best checkpoint** (highest val_acc during training, our
+primary metric), not its final step.
 
-**Overfitting correction:** an initial 10,000-step run showed val_loss
-bottoming out early (~step 1600–1800) then rising substantially while
-train_loss collapsed toward zero — classic overfitting, which would also bias
-the sharpness scan (computed at the final step) toward whichever optimizer
-overfits more. Reported metrics below — including the sharpness scan — are
-therefore taken from each run's **best checkpoint** (highest val_acc seen
-during training, our primary metric), not the final step.
-
-**Fixed default hyperparameters (Matched experiment):**
+**Fixed default hyperparameters (matched experiment):**
 
 | Optimizer | lr | weight_decay | momentum / betas | other |
 |---|---|---|---|---|
