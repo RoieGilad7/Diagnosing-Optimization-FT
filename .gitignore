@@ -1,3 +1,4 @@
+.vscode/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -216,3 +217,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project experiment artifacts: keep results (csv/json/yaml/db/png), but
+# never commit model checkpoints -- large and always regenerable by rerunning
+# the experiment (see README).
+outputs/**/*.ckpt
+.hf_cache/

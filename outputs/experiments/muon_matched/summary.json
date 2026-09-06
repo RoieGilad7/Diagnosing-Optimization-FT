@@ -1,0 +1,48 @@
+{
+  "optimizer": "muon",
+  "val_loss": 0.4299242474617214,
+  "val_acc": 0.8130733944954128,
+  "test_loss": 0.324458790063858,
+  "test_acc": 0.874,
+  "best_step": 4400,
+  "final_step_val_loss": 0.4386092375177856,
+  "final_step_val_acc": 0.8107798165137615,
+  "opt_steps": 5000,
+  "param_groups": {
+    "optimizer": "muon",
+    "muon_tensors": 36,
+    "muon_params": 42467328,
+    "adamw_tensors": 68,
+    "adamw_params": 24487682
+  },
+  "versions": {
+    "python": "3.13.10",
+    "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+    "torch": "2.14.0",
+    "lightning": "2.6.5",
+    "transformers": "5.16.1"
+  },
+  "sharpness": {
+    "eps": [
+      0.001,
+      0.01,
+      0.05
+    ],
+    "mean_increase": [
+      -0.009771319106221199,
+      -0.00529310991987586,
+      -0.001716539729386568
+    ],
+    "max_increase": [
+      0.023598607629537582,
+      0.026484686881303787,
+      0.04242127016186714
+    ],
+    "std_increase": [
+      0.01607987843453884,
+      0.016662226989865303,
+      0.017010856419801712
+    ],
+    "baseline_loss": 0.47042497247457504
+  }
+}
