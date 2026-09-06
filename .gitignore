@@ -218,6 +218,8 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Project experiment artifacts and HF cache
-outputs/
+# Project experiment artifacts: keep results (csv/json/yaml/db/png), but
+# never commit model checkpoints -- large and always regenerable by rerunning
+# the experiment (see README).
+outputs/**/*.ckpt
 .hf_cache/
