@@ -69,6 +69,18 @@ def quick_overrides() -> dict:
     }
 
 
+def search_overrides() -> dict:
+    """Reduced-fidelity training budget for phase-1 Optuna trials. Deliberately
+    kept independent of configs/*.yaml's train.max_steps (phase-2's budget) so
+    the search stays cheap even if phase-2's "full" budget grows later; 1000
+    steps clears the 10%-warmup window with room to separate good/bad configs
+    without paying full phase-2 training cost per trial."""
+    return {
+        "train.max_steps": 1000,
+        "train.eval_every": 100,
+    }
+
+
 def run_phase0(args) -> None:
     cfg = load_base_config(args.optimizer)
     cfg = merge_overrides(cfg, quick_overrides())
@@ -102,9 +114,9 @@ def _verify_checkpoint_loads(ckpt: Path, cfg: ExperimentConfig) -> None:
 
 
 def suggest_hparams(trial: optuna.Trial, optimizer: str) -> dict:
-    """Intentionally small search space (see prompt): lr + weight decay, plus
-    momentum for Muon and its AdamW equivalent (beta1, the first-moment decay
-    rate). beta2 and all other optimizer settings are held fixed."""
+    """Intentionally small search space: lr + weight decay, plus momentum for
+    Muon and its AdamW equivalent (beta1, the first-moment decay rate). beta2
+    and all other optimizer settings are held fixed."""
     if optimizer == "adamw":
         beta1 = trial.suggest_float("beta1", 0.80, 0.99)
         return {
@@ -113,8 +125,12 @@ def suggest_hparams(trial: optuna.Trial, optimizer: str) -> dict:
             "optim.betas": (beta1, 0.999),
         }
     if optimizer == "muon":
+        # lr floor lowered from 1e-3 to 1e-4: the first full search showed a
+        # strong, monotonic (not U-shaped) negative correlation between lr and
+        # val_acc, with every good trial clustered at the low edge of [1e-3,
+        # 1e-1] -- the true optimum was likely below the floor we searched.
         return {
-            "optim.lr": trial.suggest_float("lr", 1e-3, 1e-1, log=True),
+            "optim.lr": trial.suggest_float("lr", 1e-4, 5e-2, log=True),
             "optim.weight_decay": trial.suggest_float("weight_decay", 0.0, 0.3),
             "optim.momentum": trial.suggest_float("momentum", 0.9, 0.99),
         }
@@ -135,7 +151,13 @@ def tune(
         storage=storage,
         load_if_exists=True,
         sampler=optuna.samplers.TPESampler(seed=base_cfg.seed),
-        pruner=optuna.pruners.MedianPruner(),
+        # Prunes a trial once its intermediate val_acc falls below the median
+        # of prior trials at the same step; the first 5 trials always run to
+        # completion so the median has something to compare against.
+        # n_warmup_steps=eval_every exempts each trial's *first* eval (which
+        # lands right at the end of the LR warmup window) from pruning, so no
+        # trial is judged before it's had one full post-warmup eval cycle.
+        pruner=optuna.pruners.MedianPruner(n_warmup_steps=base_cfg.train.eval_every),
     )
 
     def objective(trial: optuna.Trial) -> float:
@@ -177,9 +199,13 @@ def save_best_config(
 def run_phase1(args) -> None:
     cfg = load_base_config(args.optimizer)
     cfg = apply_cli_overrides(cfg, args)
-    if args.quick:
-        cfg = merge_overrides(cfg, quick_overrides())
-    study_dir = Path(args.output_dir or f"outputs/optuna/{args.optimizer}")
+    # Non-quick phase-1 runs get their own reduced-fidelity search budget
+    # (see search_overrides) rather than inheriting phase-2's raw config.
+    cfg = merge_overrides(cfg, quick_overrides() if args.quick else search_overrides())
+    # Quick smoke runs get a distinct default path so they can never
+    # load_if_exists=True into (and contaminate) a real study.db.
+    suffix = "_quick" if args.quick else ""
+    study_dir = Path(args.output_dir or f"outputs/optuna/{args.optimizer}{suffix}")
     logger.info("[phase1] tuning %s: %d trials -> %s", args.optimizer, args.trials, study_dir)
 
     study = tune(cfg, n_trials=args.trials, study_dir=study_dir, verbose=args.verbose)
@@ -188,7 +214,13 @@ def run_phase1(args) -> None:
     n_complete = sum(t.state == optuna.trial.TrialState.COMPLETE for t in study.trials)
     logger.info("[phase1] trials: %d complete, %d pruned", n_complete, n_pruned)
 
-    phase2_cfg = merge_overrides(cfg, {"output_dir": f"outputs/experiments/{args.optimizer}_best"})
+    # Built from a *fresh* load_base_config, not the phase-1-tuned `cfg` above:
+    # `cfg` carries search_overrides()'s reduced-fidelity train.* budget, which
+    # must not leak into best_config.yaml -- phase 2 should train the tuned
+    # hyperparameters under phase-2's own (full) budget, matching the "matched"
+    # experiment's budget for a fair comparison.
+    phase2_cfg = load_base_config(args.optimizer)
+    phase2_cfg = merge_overrides(phase2_cfg, {"output_dir": f"outputs/experiments/{args.optimizer}_best"})
     best = save_best_config(study, phase2_cfg, study_dir / "best_config.yaml")
     logger.info("[phase1] best val_acc=%.4f params=%s", study.best_value, study.best_params)
     logger.info("[phase1] wrote %s", study_dir / "best_config.yaml")

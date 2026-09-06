@@ -48,6 +48,15 @@ class FineTuneModule(L.LightningModule):
         self._logger: CSVMetricLogger | None = None
         self._collector: MetricCollector | None = None
         self._scheduler = None
+        # Best-checkpoint tracking (by highest val_acc seen -- val_acc is this
+        # study's primary metric, see methodology.md), independent of
+        # whatever step training happens to stop at -- addresses overfitting
+        # by letting callers evaluate/scan sharpness at the best point instead
+        # of the (possibly overfit) final step. State dict is kept on CPU to
+        # avoid doubling accelerator memory during training.
+        self._best_val_acc = float("-inf")
+        self._best_state: dict | None = None
+        self.best_step: int | None = None
         self.save_hyperparameters(cfg.to_dict())
 
     # ---- setup -----------------------------------------------------------
@@ -156,11 +165,23 @@ class FineTuneModule(L.LightningModule):
         val_loss, val_acc = self.evaluate(self.trainer.datamodule.val_dataloader())
         self.log("val_acc", val_acc, prog_bar=True)
         self.log("val_loss", val_loss)
+        if val_acc > self._best_val_acc:
+            self._best_val_acc = val_acc
+            self._best_state = {k: v.detach().cpu().clone() for k, v in self.model.state_dict().items()}
+            self.best_step = self.opt_step
         if self._on_eval is not None:
             # May raise (e.g. optuna.TrialPruned) to abort training early;
             # that's intentional and propagates up through trainer.fit().
             self._on_eval(self.opt_step, val_acc)
         return {"val_loss": val_loss, "val_acc": val_acc}
+
+    def restore_best_state(self) -> bool:
+        """Loads the highest-val_acc weights seen during training back into
+        self.model, in place. Returns False (no-op) if eval never ran."""
+        if self._best_state is None:
+            return False
+        self.model.load_state_dict(self._best_state)
+        return True
 
     def _lr_row(self, optimizer: torch.optim.Optimizer) -> dict:
         groups = optimizer.param_groups

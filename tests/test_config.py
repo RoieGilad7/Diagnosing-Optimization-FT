@@ -15,7 +15,7 @@ CONFIGS = Path("configs")
 def test_load_default_config_types():
     cfg = load_config(CONFIGS / "default.yaml")
     assert cfg.model_name == "distilbert-base-uncased"
-    assert cfg.train.max_steps == 300
+    assert cfg.train.max_steps == 5000
     assert cfg.data.dataset_name == "stanfordnlp/sst2"
 
 

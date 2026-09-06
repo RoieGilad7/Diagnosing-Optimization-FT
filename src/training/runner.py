@@ -62,7 +62,22 @@ def run_experiment(
     trainer = build_trainer(cfg, output_dir, save_checkpoint, verbose)
     trainer.fit(module, datamodule=dm)
 
-    val_loss, val_acc = module.evaluate(dm.val_dataloader())
+    # Final-step numbers, kept for transparency/comparison even though they
+    # may reflect an overfit state (see restore below).
+    final_val_loss, final_val_acc = module.evaluate(dm.val_dataloader())
+
+    # Swap in the highest-val_acc weights seen during training (if any eval
+    # ran) before computing the numbers we actually report, and before the
+    # sharpness scan below -- otherwise both reflect however overfit the
+    # model happened to be at the final step, confounding any comparison
+    # between optimizers that overfit at different rates. val_acc (not
+    # val_loss) is used since it's this study's primary metric.
+    restored = module.restore_best_state()
+    if restored:
+        val_loss, val_acc = module.evaluate(dm.val_dataloader())
+        best_step = module.best_step
+    else:
+        val_loss, val_acc, best_step = final_val_loss, final_val_acc, module.opt_step
     test_loss, test_acc = module.evaluate(dm.test_dataloader())
 
     summary = {
@@ -71,10 +86,16 @@ def run_experiment(
         "val_acc": val_acc,
         "test_loss": test_loss,
         "test_acc": test_acc,
+        "best_step": best_step,
+        "final_step_val_loss": final_val_loss,
+        "final_step_val_acc": final_val_acc,
         "opt_steps": module.opt_step,
         "param_groups": module.opt_info,
         "versions": software_versions(),
     }
+
+    if save_checkpoint and restored:
+        trainer.save_checkpoint(str(output_dir / "best.ckpt"))
 
     if do_sharpness:
         sh = cfg.sharpness
